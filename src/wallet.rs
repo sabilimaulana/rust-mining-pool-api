@@ -1,3 +1,5 @@
+use std::result;
+
 use {
     super::schema::wallets,
     crate::miner::{Miner, MinerDAO},
@@ -53,44 +55,57 @@ impl WalletDAO {
     }
 }
 
-pub fn get_workers_online(_wallet_dao: &WalletDAO, conn: &DBPooledConnection) -> Vec<Miner> {
-    use crate::schema::miners::dsl::*;
-
-    match miners
-        .filter(address.eq(_wallet_dao.address))
-        .load::<MinerDAO>(conn)
-    {
-        Ok(result) => result
-            .into_iter()
-            .map(|m| m.to_miner(_wallet_dao.club_name.clone()))
-            .collect::<Vec<Miner>>(),
-        Err(_) => vec![],
-    }
-}
-
 pub fn fetch_all_wallets(conn: &DBPooledConnection) -> Vec<Wallet> {
+    use crate::schema::miners::dsl::*;
     use crate::schema::wallets::dsl::*;
 
-    match wallets.load::<WalletDAO>(conn) {
-        Ok(result) => result
-            .into_iter()
-            .map(|w| {
-                let workers_online = get_workers_online(&w, conn);
-                w.to_wallet(workers_online)
-            })
-            .collect::<Vec<Wallet>>(),
+    let all_wallets = match wallets.load::<WalletDAO>(conn) {
+        Ok(result) => result,
         Err(_) => vec![],
-    }
+    };
+
+    let all_miners = match miners.load::<MinerDAO>(conn) {
+        Ok(result) => result,
+        Err(_) => vec![],
+    };
+
+    all_wallets
+        .into_iter()
+        .map(|w| {
+            let mut workers_online = vec![];
+            for m in all_miners.iter() {
+                if m.address.eq(&w.address) {
+                    workers_online.push(m.to_miner(w.club_name.clone()));
+                }
+            }
+            w.to_wallet(workers_online)
+        })
+        .collect::<Vec<Wallet>>()
 }
 
 pub fn fetch_wallet_by_id(_address: Uuid, conn: &DBPooledConnection) -> Option<Wallet> {
+    use crate::schema::miners::dsl::*;
     use crate::schema::wallets::dsl::*;
-    match wallets.filter(address.eq(_address)).load::<WalletDAO>(conn) {
-        Ok(result) => match result.first() {
-            Some(matched_wallet) => {
-                let workers_online = get_workers_online(matched_wallet, conn);
-                Some(matched_wallet.to_wallet(workers_online))
-            }
+
+    match wallets
+        .filter(crate::schema::wallets::dsl::address.eq(_address))
+        .load::<WalletDAO>(conn)
+    {
+        Ok(wallets_result) => match wallets_result.first() {
+            Some(matched_wallet_dao) => match miners
+                .filter(crate::schema::miners::dsl::address.eq(_address))
+                .load::<MinerDAO>(conn)
+            {
+                Ok(miners_result) => Some(
+                    matched_wallet_dao.to_wallet(
+                        miners_result
+                            .into_iter()
+                            .map(|m| m.to_miner(matched_wallet_dao.club_name.clone()))
+                            .collect::<Vec<Miner>>(),
+                    ),
+                ),
+                Err(_) => Some(matched_wallet_dao.to_wallet(vec![])),
+            },
             _ => None,
         },
         Err(_) => None,
@@ -102,16 +117,11 @@ pub fn create_new_wallet(
     conn: &DBPooledConnection,
 ) -> Result<Wallet, Error> {
     use crate::schema::wallets::dsl::*;
-    let new_wallet = Wallet {
-        address: Uuid::new_v4().to_string(),
-        club_name: new_wallet_request.club_name.to_string(),
-        total_hash_rate: 0,
-        total_shares_mined: 0,
-        total_workers_online: 0,
-        workers_online: vec![],
-    };
 
-    let new_wallet_dao = new_wallet.to_wallet_dao();
+    let new_wallet_dao = WalletDAO {
+        address: Uuid::new_v4(),
+        club_name: new_wallet_request.club_name.clone(),
+    };
 
     match diesel::insert_into(wallets)
         .values(&new_wallet_dao)
