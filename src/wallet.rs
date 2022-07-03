@@ -1,5 +1,3 @@
-use std::result;
-
 use {
     super::schema::wallets,
     crate::miner::{Miner, MinerDAO},
